@@ -22,28 +22,23 @@ import java.net.URLConnection;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.stream.Collectors;
 
 import org.eclipse.jdt.annotation.NonNullByDefault;
 import org.eclipse.jdt.annotation.Nullable;
 import org.openhab.core.addon.Addon;
-import org.openhab.core.addon.AddonEventFactory;
 import org.openhab.core.addon.AddonService;
 import org.openhab.core.addon.AddonType;
 import org.openhab.core.addon.marketplace.MarketplaceAddonHandler;
-import org.openhab.core.addon.marketplace.MarketplaceHandlerException;
 import org.openhab.core.addon.marketplace.internal.json.model.AddonEntryDTO;
 import org.openhab.core.config.core.ConfigurableService;
-import org.openhab.core.events.Event;
 import org.openhab.core.events.EventPublisher;
+import org.openhab.core.storage.StorageService;
 import org.osgi.framework.Constants;
-import org.osgi.service.cm.Configuration;
 import org.osgi.service.cm.ConfigurationAdmin;
 import org.osgi.service.component.annotations.Activate;
 import org.osgi.service.component.annotations.Component;
@@ -54,8 +49,6 @@ import org.osgi.service.component.annotations.ReferencePolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
 
 /**
@@ -64,15 +57,16 @@ import com.google.gson.reflect.TypeToken;
  * @author Yannick Schaus - Initial contribution
  * @author Jan N. Klug - Refactored for JSON marketplaces
  */
-@Component(immediate = true, configurationPid = { "org.openhab.jsonaddonservice" }, //
-        property = Constants.SERVICE_PID + "=org.openhab.jsonaddonservice")
+@Component(immediate = true, configurationPid = JsonAddonService.SERVICE_PID, //
+        property = Constants.SERVICE_PID + "=" + JsonAddonService.SERVICE_PID)
 @ConfigurableService(category = "system", label = JsonAddonService.SERVICE_NAME, description_uri = JsonAddonService.CONFIG_URI)
 @NonNullByDefault
-public class JsonAddonService implements AddonService {
+public class JsonAddonService extends AbstractAddonService {
     private final Logger logger = LoggerFactory.getLogger(JsonAddonService.class);
 
     static final String SERVICE_NAME = "Json 3rd Party Add-on Service";
     static final String CONFIG_URI = "system:jsonaddonservice";
+    static final String SERVICE_PID = "org.openhab.jsonaddonservice";
 
     private static final String SERVICE_ID = "json";
     private static final String ADDON_ID_PREFIX = SERVICE_ID + ":";
@@ -89,22 +83,16 @@ public class JsonAddonService implements AddonService {
             "ui", new AddonType("ui", "User Interfaces"), //
             "voice", new AddonType("voice", "Voice"));
 
-    private final Gson gson = new GsonBuilder().setDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").create();
-    private final Set<MarketplaceAddonHandler> addonHandlers = new HashSet<>();
-
     private List<String> addonserviceUrls = List.of();
     private List<AddonEntryDTO> cachedAddons = List.of();
 
     private boolean showUnstable = false;
 
-    private final EventPublisher eventPublisher;
-    private final ConfigurationAdmin configurationAdmin;
-
     @Activate
     public JsonAddonService(@Reference EventPublisher eventPublisher, @Reference ConfigurationAdmin configurationAdmin,
-            Map<String, Object> config) {
-        this.eventPublisher = eventPublisher;
-        this.configurationAdmin = configurationAdmin;
+            @Reference StorageService storageService, Map<String, Object> config) {
+        super(eventPublisher, configurationAdmin);
+        this.installedAddonStorage = storageService.getStorage(SERVICE_PID);
         modified(config);
     }
 
@@ -143,7 +131,15 @@ public class JsonAddonService implements AddonService {
             return;
         }
 
-        cachedAddons = (List<AddonEntryDTO>) addonserviceUrls.stream().map(urlString -> {
+        List<AddonEntryDTO> addons = new ArrayList<>();
+        // all addons from storage
+        installedAddonStorage.stream()
+                .map(e -> fromAddon(e.getKey(), Objects.requireNonNull(gson.fromJson(e.getValue(), Addon.class))))
+                .forEach(addons::add);
+        // create lookup list to make sure installed addons take precedence
+        List<String> installedAddons = addons.stream().map(e -> e.id).collect(Collectors.toList());
+
+        addonserviceUrls.stream().map(urlString -> {
             try {
                 URL url = new URL(urlString);
                 URLConnection connection = url.openConnection();
@@ -155,8 +151,9 @@ public class JsonAddonService implements AddonService {
             } catch (IOException e) {
                 return List.of();
             }
-        }).flatMap(List::stream).filter(e -> showUnstable || "stable".equals(((AddonEntryDTO) e).maturity))
-                .collect(Collectors.toList());
+        }).flatMap(List::stream).map(e -> (AddonEntryDTO) e).filter(e -> showUnstable || "stable".equals(e.maturity))
+                .filter(e -> !installedAddons.contains(e.id)).forEach(addons::add);
+        cachedAddons = addons;
     }
 
     @Override
@@ -175,52 +172,6 @@ public class JsonAddonService implements AddonService {
     @Override
     public List<AddonType> getTypes(@Nullable Locale locale) {
         return new ArrayList<>(TAG_ADDON_TYPE_MAP.values());
-    }
-
-    @Override
-    public void install(String id) {
-        Addon addon = getAddon(id, null);
-        if (addon != null) {
-            for (MarketplaceAddonHandler handler : addonHandlers) {
-                if (handler.supports(addon.getType(), addon.getContentType())) {
-                    if (!handler.isInstalled(addon.getId())) {
-                        try {
-                            handler.install(addon);
-                            postInstalledEvent(addon.getId());
-                        } catch (MarketplaceHandlerException e) {
-                            postFailureEvent(addon.getId(), e.getMessage());
-                        }
-                    } else {
-                        postFailureEvent(addon.getId(), "Add-on is already installed.");
-                    }
-                    return;
-                }
-            }
-        }
-        postFailureEvent(id, "Add-on not known.");
-    }
-
-    @Override
-    public void uninstall(String id) {
-        Addon addon = getAddon(id, null);
-        if (addon != null) {
-            for (MarketplaceAddonHandler handler : addonHandlers) {
-                if (handler.supports(addon.getType(), addon.getContentType())) {
-                    if (handler.isInstalled(addon.getId())) {
-                        try {
-                            handler.uninstall(addon);
-                            postUninstalledEvent(addon.getId());
-                        } catch (MarketplaceHandlerException e) {
-                            postFailureEvent(addon.getId(), e.getMessage());
-                        }
-                    } else {
-                        postFailureEvent(addon.getId(), "Add-on is not installed.");
-                    }
-                    return;
-                }
-            }
-        }
-        postFailureEvent(id, "Add-on not known.");
     }
 
     @Override
@@ -251,27 +202,21 @@ public class JsonAddonService implements AddonService {
                 .withConfigDescriptionURI(addonEntry.configDescriptionURI).build();
     }
 
-    private void postInstalledEvent(String extensionId) {
-        Event event = AddonEventFactory.createAddonInstalledEvent(extensionId);
-        eventPublisher.post(event);
-    }
-
-    private void postUninstalledEvent(String extensionId) {
-        Event event = AddonEventFactory.createAddonUninstalledEvent(extensionId);
-        eventPublisher.post(event);
-    }
-
-    private void postFailureEvent(String extensionId, @Nullable String msg) {
-        Event event = AddonEventFactory.createAddonFailureEvent(extensionId, msg);
-        eventPublisher.post(event);
-    }
-
-    private boolean remoteEnabled() {
-        try {
-            Configuration configuration = configurationAdmin.getConfiguration("org.openhab.addons", null);
-            return (boolean) Objects.requireNonNullElse(configuration.getProperties().get("remote"), true);
-        } catch (IOException e) {
-            return true;
-        }
+    private AddonEntryDTO fromAddon(String id, Addon addon) {
+        AddonEntryDTO dto = new AddonEntryDTO();
+        dto.id = id;
+        dto.type = addon.getType();
+        dto.description = addon.getDetailedDescription();
+        dto.title = addon.getLabel();
+        dto.link = addon.getLink();
+        dto.version = addon.getVersion();
+        dto.author = addon.getAuthor();
+        dto.configDescriptionURI = addon.getConfigDescriptionURI();
+        dto.maturity = addon.getMaturity();
+        dto.contentType = addon.getContentType();
+        Map<String, Object> properties = addon.getProperties();
+        dto.url = (String) properties.entrySet().stream().filter(p -> p.getKey().endsWith("url")).findFirst()
+                .map(Map.Entry::getValue).orElse("");
+        return dto;
     }
 }
