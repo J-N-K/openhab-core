@@ -169,6 +169,7 @@ public class CommunityMarketplaceAddonService extends AbstractAddonService {
         List<Addon> addons = new ArrayList<>();
         installedAddonStorage.stream().map(e -> Objects.requireNonNull(gson.fromJson(e.getValue(), Addon.class)))
                 .forEach(addons::add);
+        addons.forEach(a -> a.setInstalled(true));
         List<String> installedAddons = addons.stream().map(Addon::getId).collect(Collectors.toList());
 
         try {
