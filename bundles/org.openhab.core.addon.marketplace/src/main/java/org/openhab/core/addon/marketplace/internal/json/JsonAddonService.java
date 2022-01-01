@@ -33,6 +33,7 @@ import org.eclipse.jdt.annotation.Nullable;
 import org.openhab.core.addon.Addon;
 import org.openhab.core.addon.AddonService;
 import org.openhab.core.addon.AddonType;
+import org.openhab.core.addon.marketplace.AbstractRemoteAddonService;
 import org.openhab.core.addon.marketplace.MarketplaceAddonHandler;
 import org.openhab.core.addon.marketplace.internal.json.model.AddonEntryDTO;
 import org.openhab.core.config.core.ConfigurableService;
@@ -61,7 +62,7 @@ import com.google.gson.reflect.TypeToken;
         property = Constants.SERVICE_PID + "=" + JsonAddonService.SERVICE_PID)
 @ConfigurableService(category = "system", label = JsonAddonService.SERVICE_NAME, description_uri = JsonAddonService.CONFIG_URI)
 @NonNullByDefault
-public class JsonAddonService extends AbstractAddonService {
+public class JsonAddonService extends AbstractRemoteAddonService {
     private final Logger logger = LoggerFactory.getLogger(JsonAddonService.class);
 
     static final String SERVICE_NAME = "Json 3rd Party Add-on Service";
@@ -74,18 +75,7 @@ public class JsonAddonService extends AbstractAddonService {
     private static final String CONFIG_URLS = "urls";
     private static final String CONFIG_SHOW_UNSTABLE = "showUnstable";
 
-    private static final Map<String, AddonType> TAG_ADDON_TYPE_MAP = Map.of( //
-            "automation", new AddonType("automation", "Automation"), //
-            "binding", new AddonType("binding", "Bindings"), //
-            "misc", new AddonType("misc", "Misc"), //
-            "persistence", new AddonType("persistence", "Persistence"), //
-            "transformation", new AddonType("transformation", "Transformations"), //
-            "ui", new AddonType("ui", "User Interfaces"), //
-            "voice", new AddonType("voice", "Voice"));
-
-    private List<String> addonserviceUrls = List.of();
-    private List<AddonEntryDTO> cachedAddons = List.of();
-
+    private List<String> addonServiceUrls = List.of();
     private boolean showUnstable = false;
 
     @Activate
@@ -99,7 +89,7 @@ public class JsonAddonService extends AbstractAddonService {
     @Modified
     public void modified(Map<String, Object> config) {
         String urls = Objects.requireNonNullElse((String) config.get(CONFIG_URLS), "");
-        addonserviceUrls = Arrays.asList(urls.split("\\|"));
+        addonServiceUrls = Arrays.asList(urls.split("\\|"));
         showUnstable = (Boolean) config.getOrDefault(CONFIG_SHOW_UNSTABLE, false);
         refreshSource();
     }
@@ -125,21 +115,8 @@ public class JsonAddonService extends AbstractAddonService {
 
     @Override
     @SuppressWarnings("unchecked")
-    public void refreshSource() {
-        if (!remoteEnabled()) {
-            cachedAddons = List.of();
-            return;
-        }
-
-        List<AddonEntryDTO> addons = new ArrayList<>();
-        // all addons from storage
-        installedAddonStorage.stream()
-                .map(e -> fromAddon(e.getKey(), Objects.requireNonNull(gson.fromJson(e.getValue(), Addon.class))))
-                .forEach(addons::add);
-        // create lookup list to make sure installed addons take precedence
-        List<String> installedAddons = addons.stream().map(e -> e.id).collect(Collectors.toList());
-
-        addonserviceUrls.stream().map(urlString -> {
+    protected List<Addon> getRemoteAddons(List<String> installedAddons) {
+        return addonServiceUrls.stream().map(urlString -> {
             try {
                 URL url = new URL(urlString);
                 URLConnection connection = url.openConnection();
@@ -152,21 +129,13 @@ public class JsonAddonService extends AbstractAddonService {
                 return List.of();
             }
         }).flatMap(List::stream).map(e -> (AddonEntryDTO) e).filter(e -> showUnstable || "stable".equals(e.maturity))
-                .filter(e -> !installedAddons.contains(e.id)).forEach(addons::add);
-        cachedAddons = addons;
-    }
-
-    @Override
-    public List<Addon> getAddons(@Nullable Locale locale) {
-        refreshSource();
-        return cachedAddons.stream().map(this::fromAddonEntry).collect(Collectors.toList());
+                .filter(e -> !installedAddons.contains(e.id)).map(this::fromAddonEntry).collect(Collectors.toList());
     }
 
     @Override
     public @Nullable Addon getAddon(String id, @Nullable Locale locale) {
         String remoteId = id.replace(ADDON_ID_PREFIX, "");
-        return cachedAddons.stream().filter(e -> remoteId.equals(e.id)).map(this::fromAddonEntry).findAny()
-                .orElse(null);
+        return cachedAddons.stream().filter(e -> remoteId.equals(e.getId())).findAny().orElse(null);
     }
 
     @Override
@@ -200,23 +169,5 @@ public class JsonAddonService extends AbstractAddonService {
                 .withAuthor(addonEntry.author).withVersion(addonEntry.version).withLabel(addonEntry.title)
                 .withMaturity(addonEntry.maturity).withProperties(properties).withLink(addonEntry.link)
                 .withConfigDescriptionURI(addonEntry.configDescriptionURI).build();
-    }
-
-    private AddonEntryDTO fromAddon(String id, Addon addon) {
-        AddonEntryDTO dto = new AddonEntryDTO();
-        dto.id = id;
-        dto.type = addon.getType();
-        dto.description = addon.getDetailedDescription();
-        dto.title = addon.getLabel();
-        dto.link = addon.getLink();
-        dto.version = addon.getVersion();
-        dto.author = addon.getAuthor();
-        dto.configDescriptionURI = addon.getConfigDescriptionURI();
-        dto.maturity = addon.getMaturity();
-        dto.contentType = addon.getContentType();
-        Map<String, Object> properties = addon.getProperties();
-        dto.url = (String) properties.entrySet().stream().filter(p -> p.getKey().endsWith("url")).findFirst()
-                .map(Map.Entry::getValue).orElse("");
-        return dto;
     }
 }

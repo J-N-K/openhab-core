@@ -37,6 +37,7 @@ import org.eclipse.jdt.annotation.Nullable;
 import org.openhab.core.addon.Addon;
 import org.openhab.core.addon.AddonService;
 import org.openhab.core.addon.AddonType;
+import org.openhab.core.addon.marketplace.AbstractRemoteAddonService;
 import org.openhab.core.addon.marketplace.MarketplaceAddonHandler;
 import org.openhab.core.addon.marketplace.internal.community.model.DiscourseCategoryResponseDTO;
 import org.openhab.core.addon.marketplace.internal.community.model.DiscourseCategoryResponseDTO.DiscoursePosterInfo;
@@ -44,7 +45,6 @@ import org.openhab.core.addon.marketplace.internal.community.model.DiscourseCate
 import org.openhab.core.addon.marketplace.internal.community.model.DiscourseCategoryResponseDTO.DiscourseUser;
 import org.openhab.core.addon.marketplace.internal.community.model.DiscourseTopicResponseDTO;
 import org.openhab.core.addon.marketplace.internal.community.model.DiscourseTopicResponseDTO.DiscoursePostLink;
-import org.openhab.core.addon.marketplace.internal.json.AbstractAddonService;
 import org.openhab.core.config.core.ConfigurableService;
 import org.openhab.core.events.EventPublisher;
 import org.openhab.core.storage.StorageService;
@@ -71,7 +71,7 @@ import com.google.gson.GsonBuilder;
         property = Constants.SERVICE_PID + "=" + CommunityMarketplaceAddonService.SERVICE_PID)
 @ConfigurableService(category = "system", label = CommunityMarketplaceAddonService.SERVICE_NAME, description_uri = CommunityMarketplaceAddonService.CONFIG_URI)
 @NonNullByDefault
-public class CommunityMarketplaceAddonService extends AbstractAddonService {
+public class CommunityMarketplaceAddonService extends AbstractRemoteAddonService {
     public static final String JAR_CONTENT_TYPE = "application/vnd.openhab.bundle";
     public static final String KAR_CONTENT_TYPE = "application/vnd.openhab.feature;type=karfile";
     public static final String RULETEMPLATES_CONTENT_TYPE = "application/vnd.openhab.ruletemplate";
@@ -102,15 +102,6 @@ public class CommunityMarketplaceAddonService extends AbstractAddonService {
     private static final Integer BLOCKLIBRARIES_CATEGORY = 76;
 
     private static final String PUBLISHED_TAG = "published";
-
-    private static final Map<String, AddonType> TAG_ADDON_TYPE_MAP = Map.of( //
-            "automation", new AddonType("automation", "Automation"), //
-            "binding", new AddonType("binding", "Bindings"), //
-            "misc", new AddonType("misc", "Misc"), //
-            "persistence", new AddonType("persistence", "Persistence"), //
-            "transformation", new AddonType("transformation", "Transformations"), //
-            "ui", new AddonType("ui", "User Interfaces"), //
-            "voice", new AddonType("voice", "Voice"));
 
     private final Logger logger = LoggerFactory.getLogger(CommunityMarketplaceAddonService.class);
     private final Gson gson = new GsonBuilder().setDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").create();
@@ -158,20 +149,8 @@ public class CommunityMarketplaceAddonService extends AbstractAddonService {
     }
 
     @Override
-    public void refreshSource() {
-    }
-
-    @Override
-    public List<Addon> getAddons(@Nullable Locale locale) {
-        if (!remoteEnabled()) {
-            return List.of();
-        }
+    protected List<Addon> getRemoteAddons(List<String> installedAddons) {
         List<Addon> addons = new ArrayList<>();
-        installedAddonStorage.stream().map(e -> Objects.requireNonNull(gson.fromJson(e.getValue(), Addon.class)))
-                .forEach(addons::add);
-        addons.forEach(a -> a.setInstalled(true));
-        List<String> installedAddons = addons.stream().map(Addon::getId).collect(Collectors.toList());
-
         try {
             List<DiscourseCategoryResponseDTO> pages = new ArrayList<>();
 
@@ -212,16 +191,16 @@ public class CommunityMarketplaceAddonService extends AbstractAddonService {
 
     @Override
     public @Nullable Addon getAddon(String id, @Nullable Locale locale) {
-        if (!remoteEnabled()) {
-            return null;
-        }
-
         // check if it is an installed add-on
         String storedAddonString = installedAddonStorage.get(id);
         if (storedAddonString != null) {
             Addon addon = Objects.requireNonNull(gson.fromJson(storedAddonString, Addon.class));
             addon.setInstalled(true);
             return addon;
+        }
+
+        if (!remoteEnabled()) {
+            return null;
         }
 
         // retrieve from remote
