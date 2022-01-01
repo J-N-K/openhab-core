@@ -23,19 +23,16 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.eclipse.jdt.annotation.NonNullByDefault;
 import org.eclipse.jdt.annotation.Nullable;
 import org.openhab.core.addon.Addon;
-import org.openhab.core.addon.AddonService;
 import org.openhab.core.addon.AddonType;
 import org.openhab.core.addon.marketplace.AbstractRemoteAddonService;
 import org.openhab.core.addon.marketplace.MarketplaceAddonHandler;
@@ -59,11 +56,8 @@ import org.osgi.service.component.annotations.ReferencePolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
-
 /**
- * This class is a {@link AddonService} retrieving posts on community.openhab.org (Discourse).
+ * This class is an {@link org.openhab.core.addon.AddonService} retrieving posts on community.openhab.org (Discourse).
  *
  * @author Yannick Schaus - Initial contribution
  */
@@ -104,8 +98,6 @@ public class CommunityMarketplaceAddonService extends AbstractRemoteAddonService
     private static final String PUBLISHED_TAG = "published";
 
     private final Logger logger = LoggerFactory.getLogger(CommunityMarketplaceAddonService.class);
-    private final Gson gson = new GsonBuilder().setDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").create();
-    private final Set<MarketplaceAddonHandler> addonHandlers = new HashSet<>();
 
     private @Nullable String apiKey = null;
     private boolean showUnpublished = false;
@@ -114,8 +106,7 @@ public class CommunityMarketplaceAddonService extends AbstractRemoteAddonService
     public CommunityMarketplaceAddonService(final @Reference EventPublisher eventPublisher,
             @Reference ConfigurationAdmin configurationAdmin, @Reference StorageService storageService,
             Map<String, Object> config) {
-        super(eventPublisher, configurationAdmin);
-        this.installedAddonStorage = storageService.getStorage(SERVICE_PID);
+        super(eventPublisher, configurationAdmin, storageService, SERVICE_PID);
         modified(config);
     }
 
@@ -149,7 +140,7 @@ public class CommunityMarketplaceAddonService extends AbstractRemoteAddonService
     }
 
     @Override
-    protected List<Addon> getRemoteAddons(List<String> installedAddons) {
+    protected List<Addon> getRemoteAddons() {
         List<Addon> addons = new ArrayList<>();
         try {
             List<DiscourseCategoryResponseDTO> pages = new ArrayList<>();
@@ -165,11 +156,11 @@ public class CommunityMarketplaceAddonService extends AbstractRemoteAddonService
 
                 try (Reader reader = new InputStreamReader(connection.getInputStream())) {
                     DiscourseCategoryResponseDTO parsed = gson.fromJson(reader, DiscourseCategoryResponseDTO.class);
-                    if (parsed.topic_list.topics.length != 0) {
+                    if (parsed.topicList.topics.length != 0) {
                         pages.add(parsed);
                     }
 
-                    if (parsed.topic_list.more_topics_url != null) {
+                    if (parsed.topicList.moreTopicsUrl != null) {
                         // Discourse URL for next page is wrong
                         url = new URL(COMMUNITY_MARKETPLACE_URL + "?page=" + pageNb++);
                     } else {
@@ -179,10 +170,9 @@ public class CommunityMarketplaceAddonService extends AbstractRemoteAddonService
             }
 
             List<DiscourseUser> users = pages.stream().flatMap(p -> Stream.of(p.users)).collect(Collectors.toList());
-            pages.stream().flatMap(p -> Stream.of(p.topic_list.topics))
+            pages.stream().flatMap(p -> Stream.of(p.topicList.topics))
                     .filter(t -> showUnpublished || Arrays.asList(t.tags).contains(PUBLISHED_TAG))
-                    .map(t -> convertTopicItemToAddon(t, users)).filter(a -> !installedAddons.contains(a.getId()))
-                    .forEach(addons::add);
+                    .map(t -> convertTopicItemToAddon(t, users)).forEach(addons::add);
         } catch (Exception e) {
             logger.error("Unable to retrieve marketplace add-ons", e);
         }
@@ -191,12 +181,11 @@ public class CommunityMarketplaceAddonService extends AbstractRemoteAddonService
 
     @Override
     public @Nullable Addon getAddon(String id, @Nullable Locale locale) {
-        // check if it is an installed add-on
-        String storedAddonString = installedAddonStorage.get(id);
-        if (storedAddonString != null) {
-            Addon addon = Objects.requireNonNull(gson.fromJson(storedAddonString, Addon.class));
-            addon.setInstalled(true);
-            return addon;
+        String remoteId = id.replace(ADDON_ID_PREFIX, "");
+        // check if it is an installed add-on (cachedAddons also contains possibly incomplete results from the remote
+        // side, we need to retrieve them from Discourse)
+        if (installedAddons.contains(id)) {
+            return cachedAddons.stream().filter(e -> remoteId.equals(e.getId())).findAny().orElse(null);
         }
 
         if (!remoteEnabled()) {
@@ -204,9 +193,8 @@ public class CommunityMarketplaceAddonService extends AbstractRemoteAddonService
         }
 
         // retrieve from remote
-        URL url;
         try {
-            url = new URL(String.format("%s%s", COMMUNITY_TOPIC_URL, id.replace(ADDON_ID_PREFIX, "")));
+            URL url = new URL(String.format("%s%s", COMMUNITY_TOPIC_URL, id.replace(ADDON_ID_PREFIX, "")));
             URLConnection connection = url.openConnection();
             connection.addRequestProperty("Accept", "application/json");
             if (this.apiKey != null) {
@@ -220,11 +208,6 @@ public class CommunityMarketplaceAddonService extends AbstractRemoteAddonService
         } catch (Exception e) {
             return null;
         }
-    }
-
-    @Override
-    public List<AddonType> getTypes(@Nullable Locale locale) {
-        return new ArrayList<>(TAG_ADDON_TYPE_MAP.values());
     }
 
     @Override
@@ -283,20 +266,20 @@ public class CommunityMarketplaceAddonService extends AbstractRemoteAddonService
         List<String> tags = Arrays.asList(Objects.requireNonNullElse(topic.tags, new String[0]));
 
         String id = ADDON_ID_PREFIX + topic.id.toString();
-        AddonType addonType = getAddonType(topic.category_id, tags);
+        AddonType addonType = getAddonType(topic.categoryId, tags);
         String type = (addonType != null) ? addonType.getId() : "";
-        String contentType = getContentType(topic.category_id, tags);
+        String contentType = getContentType(topic.categoryId, tags);
 
         String title = topic.title;
         String link = COMMUNITY_TOPIC_URL + topic.id.toString();
-        int likeCount = topic.like_count;
+        int likeCount = topic.likeCount;
         int views = topic.views;
-        int postsCount = topic.posts_count;
-        Date createdDate = topic.created_at;
+        int postsCount = topic.postsCount;
+        Date createdDate = topic.createdAt;
         String author = "";
         for (DiscoursePosterInfo posterInfo : topic.posters) {
             if (posterInfo.description.contains("Original Poster")) {
-                author = users.stream().filter(u -> u.id.equals(posterInfo.user_id)).findFirst().get().name;
+                author = users.stream().filter(u -> u.id.equals(posterInfo.userId)).findFirst().get().name;
             }
         }
 
@@ -312,7 +295,7 @@ public class CommunityMarketplaceAddonService extends AbstractRemoteAddonService
         boolean installed = addonHandlers.stream()
                 .anyMatch(handler -> handler.supports(type, contentType) && handler.isInstalled(id));
 
-        return Addon.create(id).withType(type).withContentType(contentType).withImageLink(topic.image_url)
+        return Addon.create(id).withType(type).withContentType(contentType).withImageLink(topic.imageUrl)
                 .withAuthor(author).withProperties(properties).withLabel(title).withInstalled(installed)
                 .withMaturity(maturity).withLink(link).build();
     }
@@ -338,16 +321,16 @@ public class CommunityMarketplaceAddonService extends AbstractRemoteAddonService
         String id = ADDON_ID_PREFIX + topic.id.toString();
         List<String> tags = Arrays.asList(Objects.requireNonNullElse(topic.tags, new String[0]));
 
-        AddonType addonType = getAddonType(topic.category_id, tags);
+        AddonType addonType = getAddonType(topic.categoryId, tags);
         String type = (addonType != null) ? addonType.getId() : "";
-        String contentType = getContentType(topic.category_id, tags);
+        String contentType = getContentType(topic.categoryId, tags);
 
-        int likeCount = topic.like_count;
+        int likeCount = topic.likeCount;
         int views = topic.views;
-        int postsCount = topic.posts_count;
-        Date createdDate = topic.post_stream.posts[0].created_at;
-        Date updatedDate = topic.post_stream.posts[0].updated_at;
-        Date lastPostedDate = topic.last_posted;
+        int postsCount = topic.postsCount;
+        Date createdDate = topic.postStream.posts[0].createdAt;
+        Date updatedDate = topic.postStream.posts[0].updatedAt;
+        Date lastPostedDate = topic.lastPosted;
 
         String maturity = tags.stream().filter(CODE_MATURITY_LEVELS::contains).findAny().orElse(null);
 
@@ -360,11 +343,11 @@ public class CommunityMarketplaceAddonService extends AbstractRemoteAddonService
         properties.put("posts_count", postsCount);
         properties.put("tags", tags.toArray(String[]::new));
 
-        String detailedDescription = topic.post_stream.posts[0].cooked;
+        String detailedDescription = topic.postStream.posts[0].cooked;
 
         // try to extract contents or links
-        if (topic.post_stream.posts[0].link_counts != null) {
-            for (DiscoursePostLink postLink : topic.post_stream.posts[0].link_counts) {
+        if (topic.postStream.posts[0].linkCounts != null) {
+            for (DiscoursePostLink postLink : topic.postStream.posts[0].linkCounts) {
                 if (postLink.url.endsWith(".jar")) {
                     properties.put("jar_download_url", postLink.url);
                 }
@@ -397,8 +380,8 @@ public class CommunityMarketplaceAddonService extends AbstractRemoteAddonService
                 .anyMatch(handler -> handler.supports(type, contentType) && handler.isInstalled(id));
 
         return Addon.create(id).withType(type).withContentType(contentType).withLabel(topic.title)
-                .withImageLink(topic.image_url).withLink(COMMUNITY_TOPIC_URL + topic.id.toString())
-                .withAuthor(topic.post_stream.posts[0].display_username).withMaturity(maturity)
+                .withImageLink(topic.imageUrl).withLink(COMMUNITY_TOPIC_URL + topic.id.toString())
+                .withAuthor(topic.postStream.posts[0].displayUsername).withMaturity(maturity)
                 .withDetailedDescription(detailedDescription).withInstalled(installed).withProperties(properties)
                 .build();
     }

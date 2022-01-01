@@ -19,7 +19,6 @@ import java.lang.reflect.Type;
 import java.net.URI;
 import java.net.URL;
 import java.net.URLConnection;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -31,8 +30,6 @@ import java.util.stream.Collectors;
 import org.eclipse.jdt.annotation.NonNullByDefault;
 import org.eclipse.jdt.annotation.Nullable;
 import org.openhab.core.addon.Addon;
-import org.openhab.core.addon.AddonService;
-import org.openhab.core.addon.AddonType;
 import org.openhab.core.addon.marketplace.AbstractRemoteAddonService;
 import org.openhab.core.addon.marketplace.MarketplaceAddonHandler;
 import org.openhab.core.addon.marketplace.internal.json.model.AddonEntryDTO;
@@ -47,13 +44,11 @@ import org.osgi.service.component.annotations.Modified;
 import org.osgi.service.component.annotations.Reference;
 import org.osgi.service.component.annotations.ReferenceCardinality;
 import org.osgi.service.component.annotations.ReferencePolicy;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import com.google.gson.reflect.TypeToken;
 
 /**
- * This class is a {@link AddonService} retrieving JSON marketplace information.
+ * This class implements an {@link org.openhab.core.addon.AddonService} retrieving JSON marketplace information.
  *
  * @author Yannick Schaus - Initial contribution
  * @author Jan N. Klug - Refactored for JSON marketplaces
@@ -63,8 +58,6 @@ import com.google.gson.reflect.TypeToken;
 @ConfigurableService(category = "system", label = JsonAddonService.SERVICE_NAME, description_uri = JsonAddonService.CONFIG_URI)
 @NonNullByDefault
 public class JsonAddonService extends AbstractRemoteAddonService {
-    private final Logger logger = LoggerFactory.getLogger(JsonAddonService.class);
-
     static final String SERVICE_NAME = "Json 3rd Party Add-on Service";
     static final String CONFIG_URI = "system:jsonaddonservice";
     static final String SERVICE_PID = "org.openhab.jsonaddonservice";
@@ -81,8 +74,7 @@ public class JsonAddonService extends AbstractRemoteAddonService {
     @Activate
     public JsonAddonService(@Reference EventPublisher eventPublisher, @Reference ConfigurationAdmin configurationAdmin,
             @Reference StorageService storageService, Map<String, Object> config) {
-        super(eventPublisher, configurationAdmin);
-        this.installedAddonStorage = storageService.getStorage(SERVICE_PID);
+        super(eventPublisher, configurationAdmin, storageService, SERVICE_PID);
         modified(config);
     }
 
@@ -115,7 +107,7 @@ public class JsonAddonService extends AbstractRemoteAddonService {
 
     @Override
     @SuppressWarnings("unchecked")
-    protected List<Addon> getRemoteAddons(List<String> installedAddons) {
+    protected List<Addon> getRemoteAddons() {
         return addonServiceUrls.stream().map(urlString -> {
             try {
                 URL url = new URL(urlString);
@@ -129,18 +121,13 @@ public class JsonAddonService extends AbstractRemoteAddonService {
                 return List.of();
             }
         }).flatMap(List::stream).map(e -> (AddonEntryDTO) e).filter(e -> showUnstable || "stable".equals(e.maturity))
-                .filter(e -> !installedAddons.contains(e.id)).map(this::fromAddonEntry).collect(Collectors.toList());
+                .map(this::fromAddonEntry).collect(Collectors.toList());
     }
 
     @Override
     public @Nullable Addon getAddon(String id, @Nullable Locale locale) {
         String remoteId = id.replace(ADDON_ID_PREFIX, "");
         return cachedAddons.stream().filter(e -> remoteId.equals(e.getId())).findAny().orElse(null);
-    }
-
-    @Override
-    public List<AddonType> getTypes(@Nullable Locale locale) {
-        return new ArrayList<>(TAG_ADDON_TYPE_MAP.values());
     }
 
     @Override

@@ -32,9 +32,9 @@ import org.openhab.core.addon.AddonType;
 import org.openhab.core.events.Event;
 import org.openhab.core.events.EventPublisher;
 import org.openhab.core.storage.Storage;
+import org.openhab.core.storage.StorageService;
 import org.osgi.service.cm.Configuration;
 import org.osgi.service.cm.ConfigurationAdmin;
-import org.osgi.service.component.annotations.Reference;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -57,15 +57,17 @@ public abstract class AbstractRemoteAddonService implements AddonService {
 
     protected final Gson gson = new GsonBuilder().setDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").create();
     protected final Set<MarketplaceAddonHandler> addonHandlers = new HashSet<>();
-    protected @NonNullByDefault({}) Storage<String> installedAddonStorage;
+    protected final Storage<String> installedAddonStorage;
     protected final EventPublisher eventPublisher;
     protected final ConfigurationAdmin configurationAdmin;
     protected List<Addon> cachedAddons = List.of();
+    protected List<String> installedAddons = List.of();
 
-    public AbstractRemoteAddonService(@Reference EventPublisher eventPublisher,
-            @Reference ConfigurationAdmin configurationAdmin) {
+    public AbstractRemoteAddonService(EventPublisher eventPublisher, ConfigurationAdmin configurationAdmin,
+            StorageService storageService, String servicePid) {
         this.eventPublisher = eventPublisher;
         this.configurationAdmin = configurationAdmin;
+        this.installedAddonStorage = storageService.getStorage(servicePid);
     }
 
     @Override
@@ -79,19 +81,19 @@ public abstract class AbstractRemoteAddonService implements AddonService {
         List<String> installedAddons = addons.stream().map(Addon::getId).collect(Collectors.toList());
 
         if (remoteEnabled()) {
-            addons.addAll(getRemoteAddons(installedAddons));
+            getRemoteAddons().stream().filter(a -> !installedAddons.contains(a.getId())).forEach(addons::add);
         }
 
         cachedAddons = addons;
+        this.installedAddons = installedAddons;
     }
 
     /**
      * get all addons from remote
      *
-     * @param installedAddons list of addon ids that are already installed locally (used for filtering)
      * @return a list of {@link Addon} that are available on the remote side
      */
-    protected abstract List<Addon> getRemoteAddons(List<String> installedAddons);
+    protected abstract List<Addon> getRemoteAddons();
 
     @Override
     public List<Addon> getAddons(@Nullable Locale locale) {
@@ -104,7 +106,9 @@ public abstract class AbstractRemoteAddonService implements AddonService {
     public abstract @Nullable Addon getAddon(String id, @Nullable Locale locale);
 
     @Override
-    public abstract List<AddonType> getTypes(@Nullable Locale locale);
+    public List<AddonType> getTypes(@Nullable Locale locale) {
+        return new ArrayList<>(TAG_ADDON_TYPE_MAP.values());
+    }
 
     @Override
     public void install(String id) {
