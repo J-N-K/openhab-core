@@ -120,8 +120,9 @@ public class JsonAddonService extends AbstractRemoteAddonService {
             } catch (IOException e) {
                 return List.of();
             }
-        }).flatMap(List::stream).map(e -> (AddonEntryDTO) e).filter(e -> showUnstable || "stable".equals(e.maturity))
-                .map(this::fromAddonEntry).collect(Collectors.toList());
+        }).flatMap(List::stream).filter(Objects::nonNull).map(e -> (AddonEntryDTO) e)
+                .filter(e -> showUnstable || "stable".equals(e.maturity)).map(this::fromAddonEntry)
+                .collect(Collectors.toList());
     }
 
     @Override
