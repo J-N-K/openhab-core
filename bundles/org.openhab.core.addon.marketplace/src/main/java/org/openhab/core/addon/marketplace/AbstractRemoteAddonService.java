@@ -15,6 +15,7 @@ package org.openhab.core.addon.marketplace;
 import java.io.IOException;
 import java.net.URI;
 import java.util.ArrayList;
+import java.util.Dictionary;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -170,7 +171,12 @@ public abstract class AbstractRemoteAddonService implements AddonService {
     protected boolean remoteEnabled() {
         try {
             Configuration configuration = configurationAdmin.getConfiguration("org.openhab.addons", null);
-            return (boolean) Objects.requireNonNullElse(configuration.getProperties().get("remote"), true);
+            Dictionary<String, Object> properties = configuration.getProperties();
+            if (properties == null) {
+                // if we can't determine a set property, we use true (default is remote enabled)
+                return true;
+            }
+            return (boolean) Objects.requireNonNullElse(properties.get("remote"), true);
         } catch (IOException e) {
             return true;
         }
