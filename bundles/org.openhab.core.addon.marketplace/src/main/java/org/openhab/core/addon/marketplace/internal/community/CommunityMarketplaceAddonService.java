@@ -14,11 +14,16 @@ package org.openhab.core.addon.marketplace.internal.community;
 
 import static org.openhab.core.addon.Addon.CODE_MATURITY_LEVELS;
 
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.Reader;
+import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URL;
 import java.net.URLConnection;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
@@ -42,8 +47,10 @@ import org.openhab.core.addon.marketplace.internal.community.model.DiscourseCate
 import org.openhab.core.addon.marketplace.internal.community.model.DiscourseCategoryResponseDTO.DiscourseUser;
 import org.openhab.core.addon.marketplace.internal.community.model.DiscourseTopicResponseDTO;
 import org.openhab.core.addon.marketplace.internal.community.model.DiscourseTopicResponseDTO.DiscoursePostLink;
+import org.openhab.core.cache.ExpiringCacheMap;
 import org.openhab.core.config.core.ConfigurableService;
 import org.openhab.core.events.EventPublisher;
+import org.openhab.core.i18n.CommunicationException;
 import org.openhab.core.storage.StorageService;
 import org.osgi.framework.Constants;
 import org.osgi.service.cm.ConfigurationAdmin;
@@ -82,6 +89,7 @@ public class CommunityMarketplaceAddonService extends AbstractRemoteAddonService
     private static final String COMMUNITY_BASE_URL = "https://community.openhab.org";
     private static final String COMMUNITY_MARKETPLACE_URL = COMMUNITY_BASE_URL + "/c/marketplace/69/l/latest";
     private static final String COMMUNITY_TOPIC_URL = COMMUNITY_BASE_URL + "/t/";
+    private static final String PARAM_PAGE = "page";
 
     private static final String SERVICE_ID = "marketplace";
     private static final String ADDON_ID_PREFIX = SERVICE_ID + ":";
@@ -99,6 +107,9 @@ public class CommunityMarketplaceAddonService extends AbstractRemoteAddonService
 
     private final Logger logger = LoggerFactory.getLogger(CommunityMarketplaceAddonService.class);
 
+    private final ExpiringCacheMap<URL, DiscourseCategoryResponseDTO> categoryCache;
+    private final ExpiringCacheMap<URL, DiscourseTopicResponseDTO> topicCache;
+
     private @Nullable String apiKey = null;
     private boolean showUnpublished = false;
 
@@ -108,6 +119,9 @@ public class CommunityMarketplaceAddonService extends AbstractRemoteAddonService
             Map<String, Object> config) {
         super(eventPublisher, configurationAdmin, storageService, SERVICE_PID);
         modified(config);
+
+        categoryCache = new ExpiringCacheMap<>(Duration.ofMinutes(15));
+        topicCache = new ExpiringCacheMap<>(Duration.ofMinutes(15));
     }
 
     @Modified
@@ -148,24 +162,17 @@ public class CommunityMarketplaceAddonService extends AbstractRemoteAddonService
             URL url = new URL(COMMUNITY_MARKETPLACE_URL);
             int pageNb = 1;
             while (url != null) {
-                URLConnection connection = url.openConnection();
-                connection.addRequestProperty("Accept", "application/json");
-                if (this.apiKey != null) {
-                    connection.addRequestProperty("Api-Key", this.apiKey);
-                }
-
-                try (Reader reader = new InputStreamReader(connection.getInputStream())) {
-                    DiscourseCategoryResponseDTO parsed = gson.fromJson(reader, DiscourseCategoryResponseDTO.class);
+                DiscourseCategoryResponseDTO parsed = getCategoryFromCache(url);
+                if (parsed != null) {
                     if (parsed.topicList.topics.length != 0) {
                         pages.add(parsed);
                     }
-
-                    if (parsed.topicList.moreTopicsUrl != null) {
-                        // Discourse URL for next page is wrong
-                        url = new URL(COMMUNITY_MARKETPLACE_URL + "?page=" + pageNb++);
-                    } else {
-                        url = null;
-                    }
+                    // Discourse URL for next page is wrong
+                    url = parsed.topicList.moreTopicsUrl == null ? null
+                            : new URL(buildURL(COMMUNITY_MARKETPLACE_URL,
+                                    Map.of(PARAM_PAGE, Integer.toString(pageNb++))));
+                } else {
+                    url = null;
                 }
             }
 
@@ -173,10 +180,24 @@ public class CommunityMarketplaceAddonService extends AbstractRemoteAddonService
             pages.stream().flatMap(p -> Stream.of(p.topicList.topics))
                     .filter(t -> showUnpublished || Arrays.asList(t.tags).contains(PUBLISHED_TAG))
                     .map(t -> convertTopicItemToAddon(t, users)).forEach(addons::add);
-        } catch (Exception e) {
+        } catch (MalformedURLException | CommunicationException e) {
             logger.error("Unable to retrieve marketplace add-ons", e);
         }
         return addons;
+    }
+
+    private @Nullable DiscourseCategoryResponseDTO getCategoryFromCache(URL url) throws CommunicationException {
+        return categoryCache.putIfAbsentAndGet(url, () -> getCategoryResponse(url));
+    }
+
+    private DiscourseCategoryResponseDTO getCategoryResponse(URL url) throws CommunicationException {
+        URLConnection connection = buildURLConnection(url);
+        try (Reader reader = new InputStreamReader(connection.getInputStream())) {
+            return gson.fromJson(reader, DiscourseCategoryResponseDTO.class);
+        } catch (IOException e) {
+            logger.debug("IOException occurred during execution: {}", e.getMessage(), e);
+            throw new CommunicationException("An unexpected exception occurred during execution");
+        }
     }
 
     @Override
@@ -194,19 +215,28 @@ public class CommunityMarketplaceAddonService extends AbstractRemoteAddonService
 
         // retrieve from remote
         try {
-            URL url = new URL(String.format("%s%s", COMMUNITY_TOPIC_URL, id.replace(ADDON_ID_PREFIX, "")));
-            URLConnection connection = url.openConnection();
-            connection.addRequestProperty("Accept", "application/json");
-            if (this.apiKey != null) {
-                connection.addRequestProperty("Api-Key", this.apiKey);
-            }
-
-            try (Reader reader = new InputStreamReader(connection.getInputStream())) {
-                DiscourseTopicResponseDTO parsed = gson.fromJson(reader, DiscourseTopicResponseDTO.class);
+            DiscourseTopicResponseDTO parsed = getTopicResponseFromCache(
+                    new URL(String.format("%s%s", COMMUNITY_TOPIC_URL, id.replace(ADDON_ID_PREFIX, ""))));
+            if (parsed != null) {
                 return convertTopicToAddon(parsed);
             }
-        } catch (Exception e) {
-            return null;
+        } catch (MalformedURLException | CommunicationException e) {
+            logger.error("Unable to retrieve marketplace add-on with id '{}'", id, e);
+        }
+        return null;
+    }
+
+    private @Nullable DiscourseTopicResponseDTO getTopicResponseFromCache(URL url) throws CommunicationException {
+        return topicCache.putIfAbsentAndGet(url, () -> getTopicResponse(url));
+    }
+
+    private DiscourseTopicResponseDTO getTopicResponse(URL url) throws CommunicationException {
+        URLConnection connection = buildURLConnection(url);
+        try (Reader reader = new InputStreamReader(connection.getInputStream())) {
+            return gson.fromJson(reader, DiscourseTopicResponseDTO.class);
+        } catch (IOException e) {
+            logger.debug("IOException occurred during execution: {}", e.getMessage(), e);
+            throw new CommunicationException("An unexpected exception occurred during execution");
         }
     }
 
@@ -219,7 +249,7 @@ public class CommunityMarketplaceAddonService extends AbstractRemoteAddonService
     }
 
     private @Nullable AddonType getAddonType(@Nullable Integer category, List<String> tags) {
-        // check if we can determine the addon type from the category
+        // check if we can determine the add-on type from the category
         if (RULETEMPLATES_CATEGORY.equals(category)) {
             return TAG_ADDON_TYPE_MAP.get("automation");
         } else if (UIWIDGETS_CATEGORY.equals(category)) {
@@ -236,7 +266,7 @@ public class CommunityMarketplaceAddonService extends AbstractRemoteAddonService
     }
 
     private String getContentType(@Nullable Integer category, List<String> tags) {
-        // check if we can determine the addon type from the category
+        // check if we can determine the add-on type from the category
         if (RULETEMPLATES_CATEGORY.equals(category)) {
             return RULETEMPLATES_CONTENT_TYPE;
         } else if (UIWIDGETS_CATEGORY.equals(category)) {
@@ -247,7 +277,7 @@ public class CommunityMarketplaceAddonService extends AbstractRemoteAddonService
             if (tags.contains("kar")) {
                 return KAR_CONTENT_TYPE;
             } else {
-                // default to plain jar bundle for addons
+                // default to plain jar bundle for add-ons
                 return JAR_CONTENT_TYPE;
             }
         }
@@ -384,5 +414,28 @@ public class CommunityMarketplaceAddonService extends AbstractRemoteAddonService
                 .withAuthor(topic.postStream.posts[0].displayUsername).withMaturity(maturity)
                 .withDetailedDescription(detailedDescription).withInstalled(installed).withProperties(properties)
                 .build();
+    }
+
+    private URLConnection buildURLConnection(URL url) throws CommunicationException {
+        try {
+            URLConnection connection = url.openConnection();
+            connection.addRequestProperty("Accept", "application/json");
+            if (apiKey != null) {
+                connection.addRequestProperty("Api-Key", apiKey);
+            }
+            return connection;
+        } catch (IOException e) {
+            logger.debug("IOException occurred while opening connection: {}", e.getMessage(), e);
+            throw new CommunicationException("An unexpected exception while opening connection");
+        }
+    }
+
+    private String buildURL(String url, Map<String, String> requestParams) {
+        return requestParams.keySet().stream().map(key -> key + "=" + encodeParam(requestParams.get(key)))
+                .collect(Collectors.joining("&", url + "?", ""));
+    }
+
+    private String encodeParam(@Nullable String value) {
+        return value == null ? "" : URLEncoder.encode(value, StandardCharsets.UTF_8);
     }
 }
