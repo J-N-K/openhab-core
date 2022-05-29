@@ -353,7 +353,7 @@ public class ItemResourceOSGiTest extends JavaOSGiTest {
 
     @ParameterizedTest
     @MethodSource("findTagTestSource")
-    public void findTagTest(String itemName, String semanticClassName, @Nullable Matcher<Iterable<String>> matcher)
+    public void findTagTest(String itemName, String semanticClassName, @Nullable Matcher<Iterable> matcher)
             throws IOException {
         // setup test: item1 has the location, item2 the equipment, item3 is the point
         item1.addTag("Office");
