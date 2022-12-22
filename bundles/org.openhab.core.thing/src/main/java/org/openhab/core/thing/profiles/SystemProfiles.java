@@ -31,6 +31,7 @@ public interface SystemProfiles {
     ProfileTypeUID OFFSET = new ProfileTypeUID(SYSTEM_SCOPE, "offset");
     ProfileTypeUID HYSTERESIS = new ProfileTypeUID(SYSTEM_SCOPE, "hysteresis");
     ProfileTypeUID RANGE = new ProfileTypeUID(SYSTEM_SCOPE, "range");
+    ProfileTypeUID UOM = new ProfileTypeUID(SYSTEM_SCOPE, "uom");
     ProfileTypeUID BUTTON_TOGGLE_SWITCH = new ProfileTypeUID(SYSTEM_SCOPE, "button-toggle-switch");
     ProfileTypeUID BUTTON_TOGGLE_PLAYER = new ProfileTypeUID(SYSTEM_SCOPE, "button-toggle-player");
     ProfileTypeUID BUTTON_TOGGLE_ROLLERSHUTTER = new ProfileTypeUID(SYSTEM_SCOPE, "button-toggle-rollershutter");
@@ -69,6 +70,10 @@ public interface SystemProfiles {
             .withSupportedItemTypes(CoreItemFactory.SWITCH) //
             .build();
 
+    ProfileType UOM_TYPE = ProfileTypeBuilder.newState(UOM, "UoM Helper") //
+            .withSupportedItemTypesOfChannel(CoreItemFactory.NUMBER) //
+            .withSupportedItemTypes(CoreItemFactory.NUMBER) //
+            .build();
     ProfileType RAWBUTTON_ON_OFF_SWITCH_TYPE = ProfileTypeBuilder
             .newTrigger(RAWBUTTON_ON_OFF_SWITCH, "Raw Button To On Off")
             .withSupportedItemTypes(CoreItemFactory.SWITCH, CoreItemFactory.DIMMER, CoreItemFactory.COLOR)
